@@ -490,7 +490,35 @@ def default_agent_factory(connection: Connection, root: str, handlers: acp.Proje
     """An AcpClient for ACP connections, an AriAgent for Ari and local models.
 
     The ACP agent's whole program runs fenced in (``sandbox.confine_agent``)
-    when the connection says so, or by default when the project is shared."""
+    when the connection says so, or by default when the project is shared. Pi
+    is an in-process adapter over Pi's own RPC protocol, but its program is
+    launched and fenced the same way."""
+    if connection.provider == "pi":
+        from .pi import PiAgent
+        argv, env = launch_spec(connection, registry)
+        env["PLAYGROUND_ACTOR"] = connection.id
+        env["PLAYGROUND_GOAL"] = goal_id
+        servers = mcp_servers_for(root, goal_id, connection.id)
+        confinement = None
+        if sandbox.agent_sandbox_wanted(connection.sandbox, shared_project=sandbox.project_is_shared(root)):
+            readable = [os.path.dirname(s["command"]) for s in servers
+                        if os.path.isabs(s["command"])]
+            try:
+                confinement = sandbox.confine_agent(
+                    argv, env, project_root=root, provider=connection.provider,
+                    config_home=connection.config_home, extra_readable=readable)
+            except sandbox.SandboxUnavailable as error:
+                why = ("this connection is set to always run fenced in" if connection.sandbox == "on"
+                       else "this project is shared with other people")
+                raise LaunchError(f"{error} {connection.label} won't start without it, because {why}. "
+                                  "To run it anyway, turn off \"Keep it inside the project\" for this connection."
+                                  ) from error
+        agent = PiAgent(root, handlers, argv=confinement.argv if confinement else argv,
+                        env=confinement.env if confinement else env, goal_id=goal_id,
+                        actor=connection.id, mcp_servers=servers, log_path=log_path,
+                        on_close=confinement.cleanup if confinement else None)
+        agent.confinement = confinement
+        return agent
     if connection.is_acp:
         from . import computers
         computer = computers.for_connection(connection)
@@ -624,6 +652,9 @@ class GoalRunner:
         self._resume_note = False                       # the next prompt says the last turn was cut off
         self.sandbox_backend = ""                       # "bwrap" | "seatbelt" | "" (not fenced in)
         self.state = "idle"
+        # What we already know before the agent starts: the last session's settings, or
+        # OpenCode's cached models. The ACP list replaces these as soon as the agent is up.
+        self._options: list[dict] = self._seed_options()
         self._worker = threading.Thread(target=self._work, name=f"goal-{goal_id}", daemon=True)
         self._worker.start()
         self._sub = self.bus.subscribe(events.DECISION_ANSWERED, self._on_answered)
@@ -745,6 +776,21 @@ class GoalRunner:
         return (self.connection.account_key() == connection.account_key()
                 and self.connection.is_acp == connection.is_acp)
 
+    def _has_work_to_hand_off(self) -> bool:
+        """Nothing to hand over on a conversation where no agent has done anything yet."""
+        try:
+            entries = self.store.read_thread(self.goal_id)
+        except Exception:  # noqa: BLE001
+            return False
+        for entry in entries:
+            if entry.role != "agent":
+                continue
+            if entry.kind in ("step", "plan", "decision", "proof"):
+                return True
+            if entry.kind == "message" and str(entry.text or "").strip():
+                return True
+        return False
+
     def _switch(self, connection: Connection) -> Handoff | None:
         old = self.connection
         same = self.is_same_account(connection)
@@ -753,13 +799,20 @@ class GoalRunner:
             if same:
                 self._save_session()
                 return None
+            try:
+                self.store.close_stale_steps(self.goal_id, {old.id})
+            except (StoreError, OSError, ValueError):
+                log.exception("closing steps the previous agent left running")
             self._shutdown_agent()
             self._session_cost = None
             self._needs_context = True
-            self._handoff = build_brief(self.store, self.goal_id, from_connection=old, to_connection=connection)
-            entry = self.store.append_thread(self.goal_id, ThreadEntry(kind="handoff", role="system", by=self.person,
-                                                                       data=self._handoff.card_data()))
-            self._handoff_entry_id = entry.id
+            self._options = self._seed_options()
+            if self._has_work_to_hand_off():
+                self._handoff = build_brief(self.store, self.goal_id, from_connection=old, to_connection=connection)
+                entry = self.store.append_thread(self.goal_id, ThreadEntry(kind="handoff", role="system",
+                                                                           by=self.person,
+                                                                           data=self._handoff.card_data()))
+                self._handoff_entry_id = entry.id
             self._save_session()
         try:
             self.store.update_goal(self.goal_id, lambda g: setattr(g, "connection", connection.id))
@@ -767,7 +820,13 @@ class GoalRunner:
             pass
         self.store.log(f"Switched to {connection.label}", kind="agent", actor=self.person, goal=self.goal_id,
                        data={"from": old.id, "to": connection.id})
-        self._state("handoff", brief=self._handoff.brief)
+        if self._handoff is not None:
+            self._state("handoff", brief=self._handoff.brief)
+        else:
+            self._state("idle")
+        self._publish_options()
+        if not self.options():
+            self.warm_options()
         return self._handoff
 
     def stop(self, grace: float = 8.0) -> None:
@@ -830,8 +889,57 @@ class GoalRunner:
     # the agent's settings: model, reasoning effort, mode (ACP session config options)
 
     def options(self) -> list[dict]:
-        """The settings the agent offers for this conversation, as last seen ([] before it has started)."""
+        """The settings the agent offers for this conversation, as last seen. OpenCode's
+        cached model list means this can be useful before the agent has started."""
         return list(getattr(self, "_options", []) or [])
+
+    def _connection_model(self) -> str:
+        return str(getattr(self.connection, "model", "") or "")
+
+    def _seed_options(self) -> list[dict]:
+        """Settings known without starting the agent: last session's, then the model cache."""
+        remembered = (self._load_session() or {}).get("options") or []
+        options = [dict(o) for o in remembered if isinstance(o, dict) and o.get("id")]
+        if not options:
+            try:
+                from . import models
+                rows = models.available(self.connection, offline=True)
+            except Exception:  # noqa: BLE001 - the cache is a convenience, never a blocker
+                rows = []
+            if rows:
+                options = [{"id": "model", "name": "Model", "category": "model", "type": "select",
+                            "currentValue": self._saved_options().get("model"), "options": rows}]
+        saved = self._saved_options()
+        default = self._connection_model()
+        model_ids = {str(o.get("id")) for o in options if o.get("category") == "model"}
+        if default and not any(str(key) in model_ids for key in saved):
+            for option in options:
+                if option.get("category") != "model":
+                    continue
+                if any(row.get("value") == default for row in option.get("options") or []):
+                    option["currentValue"] = default
+                break
+        return options
+
+    def warm_options(self) -> None:
+        """Fetch a model list from the agent's program when the person opens the menu."""
+        if not getattr(self.connection, "is_acp", False) or self.options():
+            return
+
+        def work() -> list[dict]:
+            try:
+                from . import models
+                return models.available(self.connection)
+            except Exception:  # noqa: BLE001
+                return []
+
+        def done(rows: list[dict]) -> None:
+            if rows and not self._closed and not self.options():
+                self._options = [{"id": "model", "name": "Model", "category": "model", "type": "select",
+                                  "currentValue": self._saved_options().get("model"), "options": rows}]
+                self._publish_options()
+
+        threading.Thread(target=lambda: done(work()), name=f"models-{self.goal_id}", daemon=True).start()
 
     def prepare(self) -> None:
         """Start the agent (if it isn't) so its settings can be shown. Off the caller's thread."""
@@ -874,7 +982,9 @@ class GoalRunner:
         agent = self._agent
         if agent is None or not self._session_id or not hasattr(agent, "config_options"):
             return
-        self._options = agent.config_options(self._session_id)
+        # A few agents repeat no options on a reopen; keep our cached list (OpenCode's
+        # models) in that case so choosing a model stays possible from the first message.
+        self._options = agent.config_options(self._session_id) or self.options()
         if not self._options:
             remembered = (self._load_session() or {}).get("options") or []
             if remembered and hasattr(agent, "sessions"):
@@ -882,8 +992,9 @@ class GoalRunner:
                 agent.sessions.setdefault(self._session_id, {})["configOptions"] = \
                     [o for o in remembered if not str(o.get("id", "")).startswith("__")]
                 self._options = agent.config_options(self._session_id) or list(remembered)
+        saved = self._saved_options()
         current = {o.get("id"): o.get("currentValue") for o in self._options}
-        for config_id, value in self._saved_options().items():
+        for config_id, value in saved.items():
             offered = next((o for o in self._options if o.get("id") == config_id), None)
             if offered is None or current.get(config_id) == value:
                 continue
@@ -893,6 +1004,17 @@ class GoalRunner:
                 self._options = agent.set_config_option(self._session_id, config_id, value)
             except Exception as error:  # noqa: BLE001
                 log.info("couldn't put back %s: %s", config_id, error)
+        model_ids = {str(o.get("id")) for o in self._options if o.get("category") == "model"}
+        default = self._connection_model()
+        if default and not any(str(key) in model_ids for key in saved):
+            offered = next((o for o in self._options if o.get("category") == "model"), None)
+            current = {o.get("id"): o.get("currentValue") for o in self._options}
+            if offered is not None and current.get(offered.get("id")) != default and \
+                    any(c.get("value") == default for c in offered.get("options") or []):
+                try:
+                    self._options = agent.set_config_option(self._session_id, str(offered.get("id")), default)
+                except Exception as error:  # noqa: BLE001
+                    log.info("couldn't use the connection's model: %s", error)
         self._save_session()
         self._publish_options()
 
@@ -1391,9 +1513,21 @@ class GoalRunner:
         self._state("stopped")
 
     def _close_stale_steps(self) -> None:
-        """A step a cut-off turn left "running" is closed before a new one starts."""
+        """A step a cut-off turn left "running" is closed before a new one starts, including
+        one left by the agent this conversation switched away from. A teammate's step, whose
+        id starts with their member id, is theirs to close on their computer."""
+        ids = {self.connection.id}
         try:
-            self.store.close_stale_steps(self.goal_id, {self.connection.id})
+            members = self.store.read_project().members
+            others = {str(m.id) for m in members if str(m.id) and str(m.id) != self.person}
+            for entry in self.store.read_thread(self.goal_id):
+                if entry.kind == "step" and entry.by and not any(
+                        entry.by.startswith(other + "-") for other in others):
+                    ids.add(entry.by)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.store.close_stale_steps(self.goal_id, ids)
         except (StoreError, OSError, ValueError):
             log.exception("closing steps a cut-off turn left open")
 

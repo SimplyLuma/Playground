@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 import urllib.request
 from typing import Any, Callable
@@ -56,13 +57,13 @@ TEAM_TASK_CAP_MIN = 1
 TEAM_TASK_CAP_MAX = 50
 
 # Environment variables that name the account folder for each program.
-HOME_VARS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+HOME_VARS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "opencode": "OPENCODE_DATA_DIR"}
 # Environment variables an API-key connection fills from the keyring.
 KEY_VARS = {
     "claude": ("ANTHROPIC_API_KEY",),
     "codex": ("CODEX_API_KEY", "OPENAI_API_KEY"),
     "gemini": ("GEMINI_API_KEY",),
-    "opencode": (),
+    "opencode": ("OPENCODE_API_KEY",),
     "goose": (),
 }
 # Keys that must not leak into a personal-plan launch, or the program bills
@@ -252,7 +253,7 @@ class Connection:
 
 
 PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode",
-                  "goose": "goose", "ollama": "local model", "ari": "Ari"}
+                  "goose": "goose", "pi": "Pi", "ollama": "local model", "ari": "Ari"}
 
 
 def possessive(name: str) -> str:
@@ -324,6 +325,8 @@ class ConnectionStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = dump_toml({"connections": [c.to_dict() for c in items]}) if items else ""
         atomic_write_text(self.path, self.HEADER + body, mode=0o600)
+        from ..core import events
+        events.bus.publish(events.CONNECTIONS_CHANGED)
 
     def add(self, connection: Connection) -> Connection:
         """Validate, give it an account folder if it needs one, and save."""
@@ -668,6 +671,47 @@ def _saved_connections() -> list[Connection]:
         return []
 
 
+def _pi_rpc_models(command: list[str], env: dict[str, str], timeout: float) -> list[dict] | None:
+    """Ask Pi itself, over RPC, which models are available. Pi only lists models
+    whose providers have usable credentials, so this doubles as its auth status.
+    Returns None when the probe fails, so the caller can fall back."""
+    proc = None
+    try:
+        proc = subprocess.Popen([*command, "--mode", "rpc", "--no-session"], env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, start_new_session=True)
+        proc.stdin.write('{"id":"pg-detect","type":"get_available_models"}\n')
+        proc.stdin.flush()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get("id") == "pg-detect" and record.get("type") == "response":
+                data = record.get("data") if isinstance(record.get("data"), dict) else {}
+                return [m for m in data.get("models") or [] if isinstance(m, dict)]
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        if proc is not None:
+            for pipe in (proc.stdin, proc.stdout):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1)
+
+
 def _run(argv: list[str], timeout: float, env: dict[str, str]) -> subprocess.CompletedProcess | None:
     try:
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env,
@@ -721,13 +765,24 @@ def detect(*, env: dict[str, str] | None = None, check_ollama: bool = True, time
 
     for provider, program, name, args in (("gemini", "gemini", "Gemini CLI", ["--version"]),
                                           ("opencode", "opencode", "OpenCode", ["--version"]),
-                                          ("goose", "goose", "goose", ["--version"])):
+                                          ("goose", "goose", "goose", ["--version"]),
+                                          ("pi", "pi", "Pi", ["--version"])):
         exe = shutil.which(program, path=path)
         item = Detected(provider, name, program=exe or "", installed=bool(exe))
         if exe:
             version = _run([exe, *args], min(timeout, 10), run_env)
             if version and version.returncode == 0:
                 item.version = (version.stdout.strip().splitlines() or [""])[0][:40]
+            if accounts.SIGN_IN_FILE.get(provider):   # programs that keep a sign-in file of their own
+                account = accounts.Account(provider, "", accounts.NAMES.get(provider, name), id=provider)
+                item = _account_item(provider, account, exe, item.version, "", run_env, timeout)
+            if provider == "pi":
+                models = _pi_rpc_models([exe], run_env, min(timeout, 15))
+                if models is not None:
+                    item.signed_in = bool(models)
+                    item.models = [str(m.get("id")) for m in models if m.get("id")]
+                    item.note = (f"Signed in to {len({m.get('provider') for m in models})} providers."
+                                 if models else "Not signed in yet. Run /login in Pi.")
         found.append(item)
 
     _readiness(found, registry, path)

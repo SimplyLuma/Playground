@@ -245,6 +245,27 @@ class RunnerOptionTests(RunnerBase):
         self.wait_for(lambda: self.calls().count({"config": ["reasoning_effort", "high"]}) == 2)
         self.assertTrue(seen)
 
+    def test_the_connection_model_is_applied_without_a_conversation_choice(self):
+        from luma_playground.agents.connections import Connection
+        conn = Connection(id="claude", label="Claude", kind="personal-plan", provider="claude", owner="noor",
+                          model="deep")
+        runner = self.runner(conn)
+        runner.prepare()
+        self.wait_for(lambda: {"config": ["model", "deep"]} in self.calls())
+        options = {o["id"]: o for o in runner.options()}
+        self.assertEqual(options["model"]["currentValue"], "deep")
+
+    def test_a_conversation_choice_beats_the_connection_model(self):
+        from luma_playground.agents.connections import Connection
+        self.store.update_goal(self.goal.id, lambda goal: goal.extra.__setitem__(
+            "agent_options", {"claude": {"model": "fast"}}))
+        conn = Connection(id="claude", label="Claude", kind="personal-plan", provider="claude", owner="noor",
+                          model="deep")
+        runner = self.runner(conn)
+        runner.prepare()
+        self.wait_for(lambda: runner.options())
+        self.assertNotIn({"config": ["model", "deep"]}, self.calls())
+
 
 class RunnerStopTests(RunnerBase):
     def test_stop_ends_the_turn_and_the_next_message_carries_on(self):
@@ -281,6 +302,16 @@ class RunnerCutOffTests(RunnerBase):
         self.assertTrue(runner.wait_idle(15))
         old = next(e for e in self.store.read_thread(self.goal.id, fold=True) if e.id == "step-old")
         self.assertEqual((old.data["state"], old.data["title"]), ("done", "Stopped partway"))
+
+    def test_a_step_left_by_another_local_agent_is_closed_by_the_next_turn(self):
+        self.store.append_thread(self.goal.id, ThreadEntry(kind="step", role="agent", by="opencode",
+                                                            id="step-other",
+                                                            data={"title": "Working", "state": "running"}))
+        runner = self.runner()
+        runner.send("hello again")
+        self.assertTrue(runner.wait_idle(15))
+        other = next(e for e in self.store.read_thread(self.goal.id, fold=True) if e.id == "step-other")
+        self.assertEqual(other.data["state"], "done")
 
     def test_a_teammates_live_step_is_left_alone(self):
         self.store.append_thread(self.goal.id, ThreadEntry(kind="step", role="agent", by="priya-claude",
@@ -487,6 +518,40 @@ class RunnerTurnTests(RunnerBase):
         self.assertIn("keep it short", prompt)
         self.assertIn("You're picking up a goal", prompt)
         self.assertTrue(all(c.by == "codex" for c in self.thread()[-2:] if c.role == "agent"))
+
+    def test_switching_a_brand_new_conversation_writes_no_handoff(self):
+        runner = self.runner()
+        codex = Connection(id="codex", label="Codex", kind="personal-plan", provider="codex", owner="noor")
+        runner.switch(codex)
+        self.assertTrue(runner.wait_idle(30))
+        self.assertFalse(any(c.kind == "handoff" for c in self.thread()))
+        self.assertEqual(self.store.read_goal(self.goal.id).connection, "codex")
+        self.assertNotEqual(self.states[-1]["state"], "handoff")
+
+    def test_switch_closes_steps_the_previous_agent_left_running(self):
+        self.store.append_thread(self.goal.id, ThreadEntry(
+            kind="step", role="agent", by="claude", id="stale-step",
+            data={"title": "Working", "state": "running", "files": [], "tool_calls": []}))
+        runner = self.runner()
+        codex = Connection(id="codex", label="Codex", kind="personal-plan", provider="codex", owner="noor")
+        runner.switch(codex)
+        self.assertTrue(runner.wait_idle(30))
+        steps = [c for c in self.thread() if c.kind == "step" and c.id == "stale-step"]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0].data["state"], "done")
+        self.assertTrue(steps[0].data.get("cut_off"))
+
+    def test_switch_replaces_the_previous_agents_model_list(self):
+        runner = self.runner()
+        runner._options = [{"id": "model", "name": "Model", "category": "model",
+                            "options": [{"value": "old-model", "name": "Old"}]}]
+        codex = Connection(id="codex", label="Codex", kind="personal-plan", provider="codex", owner="noor")
+        with mock.patch("luma_playground.agents.models.available",
+                        return_value=[{"value": "new-model", "name": "New"}]):
+            runner.switch(codex)
+            self.assertTrue(runner.wait_idle(30))
+        options = {o["id"]: o for o in runner.options()}
+        self.assertEqual([c["value"] for c in options["model"]["options"]], ["new-model"])
 
     def test_switch_to_the_same_account_carries_on(self):
         runner = self.runner()

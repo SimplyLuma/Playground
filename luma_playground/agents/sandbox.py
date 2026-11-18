@@ -603,6 +603,9 @@ AGENT_HOMES = {
     "gemini": (".gemini",),
     "opencode": (".local/share/opencode", ".config/opencode", ".local/state/opencode"),
     "goose": (".config/goose", ".local/share/goose", ".local/state/goose"),
+    # Pi normally uses ~/.pi/agent, but a Playground connection points it at a
+    # per-project .playground/local/pi/<actor>/ dir via PI_CODING_AGENT_DIR.
+    "pi": (".pi",),
 }
 # Caches a program writes besides its home (logs, update checks).
 AGENT_CACHES = {

@@ -69,6 +69,7 @@ class Thread(Gtk.Box):
         if getattr(self, "_thinking_timer", 0):
             GLib.source_remove(self._thinking_timer)
         self._thinking_timer, self._thinking_shown, self._thinking_wanted = 0, None, None
+        self._thinking_requested = None
         self.thinking = None
         self.widgets: dict[str, Gtk.Widget] = {}
         self.entries: dict[str, dict] = {}
@@ -150,6 +151,13 @@ class Thread(Gtk.Box):
         wanted = (who, what) if who else None
         self._thinking_wanted = wanted
         pending = getattr(self, "_thinking_timer", 0)
+        if wanted == getattr(self, "_thinking_requested", None):
+            if pending:
+                return                      # the same state again: don't push the settle timer back
+            if wanted == getattr(self, "_thinking_shown", None):
+                self._move_thinking_to_bottom()
+                return
+        self._thinking_requested = wanted
         if pending:
             GLib.source_remove(pending)
             self._thinking_timer = 0
@@ -157,6 +165,12 @@ class Thread(Gtk.Box):
             self._apply_thinking()
             return
         self._thinking_timer = GLib.timeout_add(self.THINKING_SETTLE_MS, self._apply_thinking)
+
+    def _move_thinking_to_bottom(self) -> None:
+        if self.thinking is not None and self.thinking.get_parent() is self.items \
+                and self.items.get_last_child() is not self.thinking:
+            self.items.remove(self.thinking)
+            self.items.append(self.thinking)
 
     def _apply_thinking(self) -> bool:
         self._thinking_timer = 0

@@ -107,6 +107,14 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(cmd.argv, argv)
             self.assertEqual(cmd.missing, argv[0])
 
+    def test_pi_builtin_runs_the_program_on_path(self):
+        reg = registry.load(offline=True, cache=self.cache)
+        entry = reg.for_provider("pi")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.distribution, {"path": {"cmd": "pi"}})
+        command = registry.launch_command(entry, path_env="")
+        self.assertEqual((command.kind, command.argv, command.missing), ("path", ["pi"], "pi"))
+
     def test_fresh_cache_is_used_without_network(self):
         self.write_cache(age_s=60)
         with mock.patch.object(registry, "_fetch", side_effect=AssertionError("no network in tests")):

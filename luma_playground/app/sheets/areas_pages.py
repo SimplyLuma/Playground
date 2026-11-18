@@ -45,7 +45,7 @@ def who_words(actor: str, members: dict[str, str]) -> str:
     if actor.startswith("agent:"):
         program = actor.split(":", 1)[1].split("@", 1)[0]
         return {"codex": "Codex", "claude": "Claude", "gemini": "Gemini", "ari": "Ari", "opencode": "OpenCode",
-                "goose": "goose"}.get(program.lower(), program.capitalize())
+                "goose": "goose", "pi": "Pi"}.get(program.lower(), program.capitalize())
     if actor in members:
         return members[actor]
     return actor.replace("-", " ").capitalize() if actor and actor.islower() else actor

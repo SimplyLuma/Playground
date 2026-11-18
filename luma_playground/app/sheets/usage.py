@@ -349,6 +349,17 @@ class UsageSheet:
         body.append(c.ListGroup(options))
 
         if getattr(conn, "is_acp", False):
+            models = c.module("agents.models")
+            rows = models.available(conn, offline=True) if models is not None else []
+            body.append(section("Model"))
+            body.append(c.ListGroup(self.model_row(conn, rows)))
+            if models is not None and not rows:
+                def done(_rows) -> None:
+                    if self.detail is not None and self.detail.id == conn.id:
+                        self.load()
+                c.run_async(lambda: models.available(conn), done=done)
+
+        if getattr(conn, "is_acp", False):
             on, shared = picker.fenced(conn, self.ctx.project_dir)
             sub = ("It can only change files in this project, and can’t read the rest of your home folder. "
                    + ("On for shared projects." if shared and conn.sandbox in ("", "on") else "Recommended."))
@@ -394,6 +405,27 @@ class UsageSheet:
         remove.set_margin_top(18)
         body.append(remove)
         return body
+
+    def model_row(self, conn, rows: list[dict]) -> Gtk.Widget:
+        values = [""] + [str(row.get("value")) for row in rows if row.get("value")]
+        names = ["Last used model"] + [str(row.get("name") or row.get("value"))
+                                      for row in rows if row.get("value")]
+        chosen = str(getattr(conn, "model", "") or "")
+        if chosen and chosen not in values:
+            values.append(chosen)
+            names.append(f"{chosen} (saved)")
+        drop = Gtk.DropDown.new(Gtk.StringList.new(names), None)
+        drop.set_selected(values.index(chosen) if chosen in values else 0)
+        drop.update_property([Gtk.AccessibleProperty.LABEL], ["Model"])
+
+        def changed(control, _param) -> None:
+            index = control.get_selected()
+            value = values[index] if 0 <= index < len(values) else ""
+            if value != str(getattr(self.detail, "model", "") or ""):
+                self.change(conn, model=value)
+
+        drop.connect("notify::selected", changed)
+        return option("Model", "The agent uses its own last used model unless you pick one here.", drop)
 
     def cap_slider(self, conn) -> Gtk.Widget:
         connections = c.module("agents.connections")
@@ -503,8 +535,8 @@ def option(title: str, sub: str, end: Gtk.Widget | None) -> Gtk.Widget:
 
 def describe(conn) -> str:
     plan = (conn.extra or {}).get("plan", "")
-    name = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode", "goose": "goose"}.get(
-        conn.provider, conn.provider)
+    name = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode", "goose": "goose",
+            "pi": "Pi"}.get(conn.provider, conn.provider)
     if conn.kind == "personal-plan":
         return f"Your {plan or 'plan'}, signed in through {name}’s own program"
     if conn.kind == "team-key":
