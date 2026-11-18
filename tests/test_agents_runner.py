@@ -282,6 +282,16 @@ class RunnerCutOffTests(RunnerBase):
         old = next(e for e in self.store.read_thread(self.goal.id, fold=True) if e.id == "step-old")
         self.assertEqual((old.data["state"], old.data["title"]), ("done", "Stopped partway"))
 
+    def test_a_step_left_by_another_local_agent_is_closed_by_the_next_turn(self):
+        self.store.append_thread(self.goal.id, ThreadEntry(kind="step", role="agent", by="opencode",
+                                                            id="step-other",
+                                                            data={"title": "Working", "state": "running"}))
+        runner = self.runner()
+        runner.send("hello again")
+        self.assertTrue(runner.wait_idle(15))
+        other = next(e for e in self.store.read_thread(self.goal.id, fold=True) if e.id == "step-other")
+        self.assertEqual(other.data["state"], "done")
+
     def test_a_teammates_live_step_is_left_alone(self):
         self.store.append_thread(self.goal.id, ThreadEntry(kind="step", role="agent", by="priya-claude",
                                                            id="step-theirs", data={"title": "Fixing", "state": "running"}))

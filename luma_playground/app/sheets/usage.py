@@ -503,8 +503,8 @@ def option(title: str, sub: str, end: Gtk.Widget | None) -> Gtk.Widget:
 
 def describe(conn) -> str:
     plan = (conn.extra or {}).get("plan", "")
-    name = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode", "goose": "goose"}.get(
-        conn.provider, conn.provider)
+    name = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode", "goose": "goose",
+            "pi": "Pi"}.get(conn.provider, conn.provider)
     if conn.kind == "personal-plan":
         return f"Your {plan or 'plan'}, signed in through {name}’s own program"
     if conn.kind == "team-key":

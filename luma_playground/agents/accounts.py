@@ -28,18 +28,20 @@ from typing import Iterable
 
 from ..core import paths
 
-HOME_VAR = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
-DEFAULT_FOLDER = {"claude": ".claude", "codex": ".codex"}
-NAMES = {"claude": "Claude", "codex": "Codex"}
+HOME_VAR = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "opencode": "OPENCODE_DATA_DIR"}
+DEFAULT_FOLDER = {"claude": ".claude", "codex": ".codex", "opencode": ".local/share/opencode"}
+NAMES = {"claude": "Claude", "codex": "Codex", "opencode": "OpenCode"}
 # The file each program writes when it signs in (only whether it exists is checked).
-SIGN_IN_FILE = {"claude": ".credentials.json", "codex": "auth.json"}
+SIGN_IN_FILE = {"claude": ".credentials.json", "codex": "auth.json", "opencode": "auth.json"}
 # Files that show a folder is the program's own, signed in or not.
 OWN_FILES = {"claude": (".credentials.json", ".claude.json", "settings.json"),
-             "codex": ("auth.json", "config.toml")}
+             "codex": ("auth.json", "config.toml"),
+             "opencode": ("auth.json", "account.json", "opencode.json", "opencode.jsonc")}
 # Folders people name for extra accounts, relative to the home folder.
 FOLDER_PATTERNS = {
     "claude": (".claude-*", ".claude_*", ".config/claude-*", ".local/share/claude-profile-*"),
     "codex": (".codex-*", ".codex_*", ".config/codex-*", ".local/share/codex-profile-*"),
+    "opencode": (".local/share/opencode-*", ".local/share/opencode_*", ".config/opencode-*", ".local/state/opencode-*"),
 }
 # Desktop apps whose extra profiles are extra accounts that need their own sign-in here.
 APP_PROFILES = {"claude": "Claude"}
