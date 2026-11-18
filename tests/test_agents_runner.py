@@ -282,6 +282,16 @@ class RunnerCutOffTests(RunnerBase):
         old = next(e for e in self.store.read_thread(self.goal.id, fold=True) if e.id == "step-old")
         self.assertEqual((old.data["state"], old.data["title"]), ("done", "Stopped partway"))
 
+    def test_a_step_left_by_another_local_agent_is_closed_by_the_next_turn(self):
+        self.store.append_thread(self.goal.id, ThreadEntry(kind="step", role="agent", by="opencode",
+                                                            id="step-other",
+                                                            data={"title": "Working", "state": "running"}))
+        runner = self.runner()
+        runner.send("hello again")
+        self.assertTrue(runner.wait_idle(15))
+        other = next(e for e in self.store.read_thread(self.goal.id, fold=True) if e.id == "step-other")
+        self.assertEqual(other.data["state"], "done")
+
     def test_a_teammates_live_step_is_left_alone(self):
         self.store.append_thread(self.goal.id, ThreadEntry(kind="step", role="agent", by="priya-claude",
                                                            id="step-theirs", data={"title": "Fixing", "state": "running"}))
@@ -487,6 +497,28 @@ class RunnerTurnTests(RunnerBase):
         self.assertIn("keep it short", prompt)
         self.assertIn("You're picking up a goal", prompt)
         self.assertTrue(all(c.by == "codex" for c in self.thread()[-2:] if c.role == "agent"))
+
+    def test_switching_a_brand_new_conversation_writes_no_handoff(self):
+        runner = self.runner()
+        codex = Connection(id="codex", label="Codex", kind="personal-plan", provider="codex", owner="noor")
+        runner.switch(codex)
+        self.assertTrue(runner.wait_idle(30))
+        self.assertFalse(any(c.kind == "handoff" for c in self.thread()))
+        self.assertEqual(self.store.read_goal(self.goal.id).connection, "codex")
+        self.assertNotEqual(self.states[-1]["state"], "handoff")
+
+    def test_switch_closes_steps_the_previous_agent_left_running(self):
+        self.store.append_thread(self.goal.id, ThreadEntry(
+            kind="step", role="agent", by="claude", id="stale-step",
+            data={"title": "Working", "state": "running", "files": [], "tool_calls": []}))
+        runner = self.runner()
+        codex = Connection(id="codex", label="Codex", kind="personal-plan", provider="codex", owner="noor")
+        runner.switch(codex)
+        self.assertTrue(runner.wait_idle(30))
+        steps = [c for c in self.thread() if c.kind == "step" and c.id == "stale-step"]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0].data["state"], "done")
+        self.assertTrue(steps[0].data.get("cut_off"))
 
     def test_switch_to_the_same_account_carries_on(self):
         runner = self.runner()

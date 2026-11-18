@@ -299,9 +299,9 @@ class Spinner(StateGlyph):
 # ── marks: agents and projects ────────────────────────────────────────────────
 
 AGENT_GLYPHS = {"claude": "sparkles", "codex": "code", "gemini": "sparkles", "ollama": "cpu", "local": "cpu",
-                "ari": "zap", "opencode": "terminal", "goose": "terminal", "team-key": "key-round"}
+                "ari": "zap", "opencode": "terminal", "goose": "terminal", "pi": "terminal", "team-key": "key-round"}
 AGENT_HUES = {"claude": 42, "codex": 165, "gemini": 250, "ollama": 292, "local": 292, "team-key": 232,
-              "opencode": 200, "goose": 120}
+              "opencode": 200, "goose": 120, "pi": 18}
 
 
 def name_hue(name: str) -> int:

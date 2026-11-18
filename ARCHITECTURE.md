@@ -36,6 +36,7 @@ src/luma-playground/
       registry.py            ACP registry fetch/cache (cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
       connections.py         Connection profiles (kind, owner, sharing, where), per-account config homes
       ari.py                 Ari: Luma's own agent loop over an OpenAI-compatible Chat Completions endpoint
+      pi.py                  Pi, driven in-process over Pi's own --mode rpc JSONL protocol (no ACP shim)
       runner.py              GoalRunner: drives one goal's conversation with a chosen connection; emits Card events
       handoff.py             builds the Handoff brief when switching agent/account
     mcp/
@@ -156,12 +157,12 @@ subprocess with a pty). It never sees a token.
 ## agents/connections.py
 
 A `Connection` has:
-- id, label, kind (`personal-plan` | `api-key` | `local` | `ari` | `team-key`), provider (`claude` | `codex` | `gemini` | `ollama` | `ari` | ...), owner
+- id, label, kind (`personal-plan` | `api-key` | `local` | `ari` | `team-key`), provider (`claude` | `codex` | `gemini` | `opencode` | `goose` | `pi` | `ollama` | `ari` | ...), owner
 - sharing (`just-me` | `team`); `team` is only allowed when kind != `personal-plan`. Enforce this in code and test it.
 - where (`this-computer` | place id)
 - work_on_team_tasks (bool, personal plans only) plus a cap
 - config_home: a per-account directory under `~/.local/share/playground/accounts/<id>/` that becomes `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. This is how two Claude accounts live side by side. Secrets never live in the project.
-- launch(): the ACP command and env, taken from the registry entry or built in (pinned): claude → `@agentclientprotocol/claude-agent-acp`, codex → `@agentclientprotocol/codex-acp`, gemini → `@google/gemini-cli --acp`, opencode and goose → their checked binaries. npm agents are installed once into `<data dir>/agents/<id>/<version>/` and started with Node; `agents/runtime.py` uses the computer's Node 22+ or downloads Playground's own pinned, sha256-checked Node into `<data dir>/runtime/`. Nobody installs anything by hand. A newer listed version installs in the background while the installed one keeps running.
+- launch(): the ACP command and env, taken from the registry entry or built in (pinned): claude → `@agentclientprotocol/claude-agent-acp`, codex → `@agentclientprotocol/codex-acp`, gemini → `@google/gemini-cli --acp`, opencode, goose and pi → their checked binaries on PATH (pi is launched in `--mode rpc` by `agents/pi.py`). npm agents are installed once into `<data dir>/agents/<id>/<version>/` and started with Node; `agents/runtime.py` uses the computer's Node 22+ or downloads Playground's own pinned, sha256-checked Node into `<data dir>/runtime/`. Nobody installs anything by hand. A newer listed version installs in the background while the installed one keeps running.
 - accounts (`agents/accounts.py`): every Claude/Codex account on the computer — the normal folder, `CLAUDE_CONFIG_DIR`/`CODEX_HOME` named in launchers, desktop shortcuts or shell settings, folders like `~/.codex-work`, extra desktop-app profiles, folders already in use — plus "Add an account from a folder" for anything hidden elsewhere. Sign-in files are only checked for existence, never read.
 
 Stored in `~/.config/playground/connections.toml`. Per-device, never in the project.
@@ -178,6 +179,10 @@ Its tools:
 - the same `playground.*` tools as the MCP server, called in-process
 
 It exposes the same handler surface as an ACP session, so GoalRunner treats Ari and ACP agents identically.
+
+## agents/pi.py
+
+Pi is launched as a subprocess in `--mode rpc`, speaking one JSON object per line on stdin/stdout (split on LF only; `U+2028`/`U+2029` are legal inside strings). `PiRpcConnection` handles framing, string-id correlation and the stderr tail; `PiAgent` translates Pi's session events (`message_update`, `tool_execution_*`, `agent_settled`) into the same ACP `session/update` dicts the card translator uses. `agent_settled` — not `agent_end` — ends a turn, because retries, compaction and steering can follow. One process serves one goal session; its config dir is `<project>/.playground/local/pi/<actor>/`, where the user's Pi credentials are linked in and this goal's Playground MCP entry is written to `mcp.json` (`exposure: direct`, `--approve` trusts the project). Extension dialogs are answered `cancelled`, since approval UI is deliberately not bridged. Like Ari, `PiAgent` has the duck-typed surface GoalRunner expects.
 
 ## agents/runner.py
 

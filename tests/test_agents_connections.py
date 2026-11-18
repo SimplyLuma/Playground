@@ -154,7 +154,7 @@ class LaunchTests(unittest.TestCase):
         base = Path(self.tmp.name)
         self.bin = base / "bin"
         self.bin.mkdir()
-        for name in ("npx", "goose"):
+        for name in ("npx", "goose", "pi"):
             exe = self.bin / name
             exe.write_text("#!/bin/sh\nexit 0\n")
             exe.chmod(0o755)
@@ -228,6 +228,13 @@ class LaunchTests(unittest.TestCase):
         argv, _ = launch_spec(Connection(id="goose", label="goose", kind="api-key", provider="goose",
                                          key_env="X"), self.reg, env=self.env, key_lookup=lambda c: "k")
         self.assertEqual(argv, [str(self.bin / "goose"), "acp"])
+
+    def test_pi_launch_spec_uses_the_program_on_path(self):
+        conn = Connection(id="pi", label="Pi", kind="personal-plan", provider="pi", owner="noor")
+        argv, env = launch_spec(conn, self.reg, env=self.env)
+        self.assertEqual(argv, [str(self.bin / "pi")])
+        with self.assertRaises(LaunchError):
+            launch_spec(conn, self.reg, env={"PATH": "/nonexistent"})
 
     def test_custom_command(self):
         conn = Connection(id="kiro", label="Kiro", kind="personal-plan", provider="kiro", command=["kiro-cli", "acp"])

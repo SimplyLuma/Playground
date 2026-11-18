@@ -65,6 +65,72 @@ class OptionsMenuTests(unittest.TestCase):
         # The kit builds its popover from exactly this menu model.
         walk(command_menu(registry, custom={}, own_rows=True))
 
+    def test_creating_a_runner_does_not_warm_the_model_list(self):
+        window = gtk_module("luma_playground.app.window")
+        stub = mock.MagicMock()
+        stub.project = mock.Mock(path="/tmp/project")
+        stub.runners = {}
+        runner = mock.Mock()
+        module = mock.Mock(GoalRunner=mock.Mock(return_value=runner))
+        with mock.patch.object(window, "_optional", return_value=module):
+            made = window.PlaygroundWindow._runner(stub, "g1", create=True)
+        self.assertIs(made, runner)
+        runner.warm_options.assert_not_called()
+
+    def test_a_running_step_by_another_agent_does_not_hide_thinking(self):
+        window = gtk_module("luma_playground.app.window")
+        stub = mock.MagicMock()
+        stub.project = mock.Mock()
+        stub.goal_id = "g1"
+        stub.project.thread.return_value = [{"kind": "step", "by": "opencode", "data": {"state": "running"}}]
+        self.assertFalse(window.PlaygroundWindow._step_running(stub, "pi"))
+        self.assertTrue(window.PlaygroundWindow._step_running(stub, "opencode"))
+    def test_stale_agent_events_from_the_old_connection_are_ignored(self):
+        window = gtk_module("luma_playground.app.window")
+        stub = mock.MagicMock()
+        stub.goal_id = "g1"
+        stub.agent_states = {}
+        stub.project = mock.Mock(path="/tmp/project")
+        stub.runners = {("/tmp/project", "g1"): mock.Mock(connection=mock.Mock(id="pi"))}
+        stub._mine.return_value = True
+        stub._step_running.return_value = False
+        stub._notify = mock.Mock()
+        stub._current_runner_is.side_effect = lambda goal, key: window.PlaygroundWindow._current_runner_is(stub, goal, key)
+        window.PlaygroundWindow._on_agent(stub, goal_id="g1", state="working", connection="opencode")
+        self.assertEqual(stub.agent_states, {})
+        stub.conversation.set_thinking.assert_not_called()
+        window.PlaygroundWindow._on_agent(stub, goal_id="g1", state="working", connection="pi")
+        self.assertEqual(stub.agent_states["g1"], "working")
+        stub.conversation.set_thinking.assert_called_once()
+
+    def test_agent_state_names_the_connection_the_runner_is_using(self):
+        window = gtk_module("luma_playground.app.window")
+        stub = mock.MagicMock()
+        stub.goal_id = "g1"
+        stub.agent_states = {}
+        stub._mine.return_value = True
+        stub._step_running.return_value = False
+        stub._notify = mock.Mock()
+        stub.connection.return_value = {"id": "pi", "label": "Pi"}
+        stub._agent_for.return_value = {"id": "opencode", "label": "OpenCode"}
+        window.PlaygroundWindow._on_agent(stub, goal_id="g1", state="working", connection="pi")
+        stub.connection.assert_called_once_with("pi")
+        stub.conversation.set_thinking.assert_called_once_with("Pi", "working")
+        stub._notify.assert_called_once_with("g1", "working", "", "pi")
+
+    def test_opening_the_options_menu_warms_the_model_list(self):
+        window = gtk_module("luma_playground.app.window")
+        stub = mock.MagicMock()
+        stub.goal_id = "g1"
+        runner = mock.Mock()
+        runner.options.return_value = [{"id": "model", "name": "Model", "category": "model",
+                                        "options": [{"value": "m1", "name": "m1"}]}]
+        stub._runner.return_value = runner
+        stub._present_options = mock.Mock()
+        window.PlaygroundWindow._options_menu(stub)
+        runner.warm_options.assert_called_once_with()
+        stub._present_options.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

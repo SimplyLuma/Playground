@@ -56,6 +56,7 @@ PROVIDER_TO_REGISTRY = {
     "gemini": "gemini",
     "opencode": "opencode",
     "goose": "goose",
+    "pi": "pi",
 }
 
 # Used when the registry can't be reached and nothing is cached, and to name
@@ -87,6 +88,11 @@ BUILTIN: dict[str, dict] = {
         "id": "goose", "name": "goose", "provider": "goose",
         "description": "goose, the open source agent from Block",
         "distribution": {"path": {"cmd": "goose", "args": ["acp"]}},
+    },
+    "pi": {
+        "id": "pi", "name": "Pi", "provider": "pi",
+        "description": "a minimal, extensible agent harness from Earendil",
+        "distribution": {"path": {"cmd": "pi"}},
     },
 }
 
