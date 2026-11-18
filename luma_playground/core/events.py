@@ -24,6 +24,7 @@ Topics (payloads are keyword arguments; store and watcher events always carry
     agent.state         goal_id, state
     usage.changed       (project usage) service_id, entry; (per-connection usage, from usage.py) its own payload
     places.changed
+    connections.changed the connections on this computer were added, changed or removed
     stack.changed       service_id (when one service changed; absent when the whole stack was rewritten)
     issue.changed       number, removed (bool, only when the file went away)
     analytics.changed   entry
@@ -53,6 +54,7 @@ AGENT_STATE = "agent.state"
 AGENT_OPTIONS = "agent.options"   # an agent's settings for a conversation: model, effort, mode
 USAGE_CHANGED = "usage.changed"
 PLACES_CHANGED = "places.changed"
+CONNECTIONS_CHANGED = "connections.changed"   # a connection was added, changed or removed on this computer
 STACK_CHANGED = "stack.changed"
 ISSUE_CHANGED = "issue.changed"
 TASK_CHANGED = "task.changed"

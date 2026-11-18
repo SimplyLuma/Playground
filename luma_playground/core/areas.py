@@ -130,8 +130,9 @@ def kept_rules(notes: Iterable[KnowledgeNote]) -> list[str]:
 GUIDE_MD = """# How to keep a Playground project up to date
 
 Only read the part you need. Times are ISO 8601 in UTC (`2026-10-12T21:40:00Z`).
-`by` and `created_by` name who did it: `agent:<program>@<computer>` (`agent:codex@noors-laptop`)
-or `person:<name>`. Change only the fields you mean to; keep everything else as it is.
+`by` and `created_by` name who did it: `$PLAYGROUND_ACTOR`, the id of the agent working here
+(also in `PLAYGROUND_ACTOR`), or `person:<name>`. Change only the fields you mean to; keep everything else as it is.
+If Playground's `playground_*` tools are available, prefer them: they fill the id in for you.
 
 ## Tasks: `.playground/tasks/<id>.md`
 
@@ -144,9 +145,9 @@ New task: a new file. The id is `t-` and five characters from `0-9a-z` without i
     status: todo            # todo, doing, done or dropped
     priority: normal        # high, normal or low
     assignee: ""            # a person, if one owns it
-    created_by: agent:codex@noors-laptop
+    created_by: $PLAYGROUND_ACTOR
     created_at: 2026-10-12T21:40:00Z
-    updated_by: agent:codex@noors-laptop
+    updated_by: $PLAYGROUND_ACTOR
     updated_at: 2026-10-12T21:40:00Z
     claimed_by: ""
     claimed_until: ""
@@ -175,7 +176,7 @@ New bug: the next number after the highest file there.
     title: A reserved seat is lost after refreshing
     severity: high          # urgent, high, medium or low
     status: open            # open, fixing, fixed or wont-fix
-    reporter: agent:claude@noors-laptop
+    reporter: $PLAYGROUND_ACTOR
     created: 2026-10-12T21:40:00Z
     updated: 2026-10-12T21:40:00Z
     place: live             # where it happened: live, or stage (the preview)
@@ -196,7 +197,7 @@ replace it with a new note, and set the old one's `status: superseded`, `superse
     ---
     title: Only parents can offer rides
     kind: decision          # purpose, decision, rule, part, lesson, mistake or note
-    added_by: agent:codex@noors-laptop
+    added_by: $PLAYGROUND_ACTOR
     created: 2026-10-12T21:40:00Z
     updated: 2026-10-12T21:40:00Z
     verified: 2026-10-12    # when someone last checked it's still true
@@ -223,7 +224,7 @@ How agents (and people) working at the same time stay out of each other's way. `
 Playground's short digest of the last two days; read that, not the whole log. Add one JSON line
 to `channel.jsonl`, never change or remove lines:
 
-    {"ts": "2026-10-12T21:40:00Z", "from": "agent:codex@noors-laptop", "kind": "start", "text": "Moving sign-in to email codes", "task": "t-7f3k2", "files": ["src/auth/"]}
+    {"ts": "2026-10-12T21:40:00Z", "from": "$PLAYGROUND_ACTOR", "kind": "start", "text": "Moving sign-in to email codes", "task": "t-7f3k2", "files": ["src/auth/"]}
 
 Kinds: `start` (what you're about to change, and roughly which files), `done` (what changed),
 `heads-up` (something others must know: a renamed file, a broken build, a changed rule),
@@ -234,7 +235,7 @@ Playground posts when a person asks an agent for something, so you'll see those 
 
 Add one JSON line at the end. Never change or remove lines.
 
-    {"ts": "2026-10-12T21:40:00Z", "actor": "agent:codex@noors-laptop", "kind": "note", "summary": "Fixed the lost seat (#14)"}
+    {"ts": "2026-10-12T21:40:00Z", "actor": "$PLAYGROUND_ACTOR", "kind": "note", "summary": "Fixed the lost seat (#14)"}
 
 Kinds: `note`, `code`, `bug`, `task`, `release`, `decision`.
 

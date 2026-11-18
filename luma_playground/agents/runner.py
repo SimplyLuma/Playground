@@ -624,6 +624,9 @@ class GoalRunner:
         self._resume_note = False                       # the next prompt says the last turn was cut off
         self.sandbox_backend = ""                       # "bwrap" | "seatbelt" | "" (not fenced in)
         self.state = "idle"
+        # What we already know before the agent starts: the last session's settings, or
+        # OpenCode's cached models. The ACP list replaces these as soon as the agent is up.
+        self._options: list[dict] = self._seed_options()
         self._worker = threading.Thread(target=self._work, name=f"goal-{goal_id}", daemon=True)
         self._worker.start()
         self._sub = self.bus.subscribe(events.DECISION_ANSWERED, self._on_answered)
@@ -830,8 +833,47 @@ class GoalRunner:
     # the agent's settings: model, reasoning effort, mode (ACP session config options)
 
     def options(self) -> list[dict]:
-        """The settings the agent offers for this conversation, as last seen ([] before it has started)."""
+        """The settings the agent offers for this conversation, as last seen. OpenCode's
+        cached model list means this can be useful before the agent has started."""
         return list(getattr(self, "_options", []) or [])
+
+    def _seed_options(self) -> list[dict]:
+        """Settings known without starting the agent: last session's, then OpenCode's cache."""
+        saved = (self._load_session() or {}).get("options") or []
+        options = [dict(o) for o in saved if isinstance(o, dict) and o.get("id")]
+        if not options and getattr(self.connection, "provider", "") == "opencode":
+            try:
+                from . import opencode
+                option = opencode.model_option(self.connection, cached_only=True,
+                                               current=self._saved_options().get(opencode.OPTION_ID))
+            except Exception:  # noqa: BLE001 - the cache is a convenience, never a blocker
+                option = None
+            if option:
+                options = [option]
+        return options
+
+    def warm_options(self) -> None:
+        """Fetch OpenCode's model list in the background when nothing is cached, so a
+        model can be chosen before the first message. The ACP list wins once it arrives."""
+        if getattr(self.connection, "provider", "") != "opencode" or not self.connection.is_acp:
+            return
+        if self.options():
+            return
+
+        def work() -> dict | None:
+            try:
+                from . import opencode
+                return opencode.model_option(self.connection,
+                                             current=self._saved_options().get(opencode.OPTION_ID))
+            except Exception:  # noqa: BLE001
+                return None
+
+        def done(option: dict | None) -> None:
+            if option is not None and not self._closed and not self.options():
+                self._options = [option]
+                self._publish_options()
+
+        threading.Thread(target=lambda: done(work()), name=f"opencode-models-{self.goal_id}", daemon=True).start()
 
     def prepare(self) -> None:
         """Start the agent (if it isn't) so its settings can be shown. Off the caller's thread."""
@@ -874,7 +916,9 @@ class GoalRunner:
         agent = self._agent
         if agent is None or not self._session_id or not hasattr(agent, "config_options"):
             return
-        self._options = agent.config_options(self._session_id)
+        # A few agents repeat no options on a reopen; keep our cached list (OpenCode's
+        # models) in that case so choosing a model stays possible from the first message.
+        self._options = agent.config_options(self._session_id) or self.options()
         if not self._options:
             remembered = (self._load_session() or {}).get("options") or []
             if remembered and hasattr(agent, "sessions"):

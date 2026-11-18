@@ -102,16 +102,41 @@ def _data_dir(name: str) -> Path:
     return app_data(name)
 
 
+def _connection_field(connection, name: str, default=""):
+    """Read a field from a stored connection dict or a Connection object."""
+    obj = connection.get("_object") if isinstance(connection, dict) else None
+    if obj is not None:
+        return getattr(obj, name, default)
+    if isinstance(connection, dict):
+        return connection.get(name, default)
+    return getattr(connection, name, default)
+
+
+def _ari_placeholder(connection) -> bool:
+    """The stand-in row load_connections() adds when nobody has connected Ari."""
+    return isinstance(connection, dict) and connection.get("id") == "ari" and connection.get("_object") is None
+
+
 # ── one project, through the store ───────────────────────────────────────────
 
 class ProjectData:
     """One open project, read through core.store (the folder is the source of truth)."""
 
-    def __init__(self, path: Path, bus) -> None:
+    def __init__(self, path: Path, bus, connections: list[dict] | None = None) -> None:
         self.path = Path(path)
         self.store = ProjectStore(self.path, bus=bus)
         self.model = None
+        self.set_connections(connections or [])
         self.reload()
+
+    def set_connections(self, connections: list[dict]) -> None:
+        """Take the window's snapshot of this computer's connections. One cached default
+        serves every row, so drawing the list never reopens connections.toml."""
+        self.connections = list(connections)
+        self.default_id = default_connection_id(self.connections)
+        self.connection_ids = {str(_connection_field(c, "id")) for c in self.connections}
+        self._connection_labels = {str(_connection_field(c, "id")): _connection_field(c, "label")
+                                   for c in self.connections}
 
     def reload(self) -> None:
         self._you = None
@@ -191,7 +216,7 @@ class ProjectData:
         except StoreError:
             return []
         pending = self.pending_counts()
-        here = local_connection_ids()
+        here = self.connection_ids
         goals = []
         for goal in listed:
             data = goal.to_dict()
@@ -238,7 +263,7 @@ class ProjectData:
         owner = str(getattr(goal, "owner", "") or "")
         if owner and owner != you and self.member(owner) is not None:
             return False
-        key = str(goal.connection or "ari")
+        key = str(goal.connection or self.default_id)
         for member in self.members:
             member_id = str(member.get("id") or "")
             if member_id and member_id != you and key.startswith(member_id + "-"):
@@ -247,21 +272,16 @@ class ProjectData:
 
     def agent_words(self, connection_id: str) -> str:
         """'Priya’s agent' for a teammate's own plan, else the connection's name."""
-        key = str(connection_id or "ari")
+        key = str(connection_id or self.default_id)
         for member in self.members:
             member_id = str(member.get("id") or "")
             if member_id and key.startswith(member_id + "-") and member_id != self.you():
                 return f"{str(member.get('name') or member_id).split()[0]}’s agent"
         if key == "ari":
             return "Ari"
-        connections = _optional("agents.connections")
-        if connections is not None:
-            try:
-                found = connections.ConnectionStore().get(key)
-            except Exception:  # noqa: BLE001
-                found = None
-            if found is not None and found.label:
-                return found.label                       # "Codex 2", as the person named it
+        label = self._connection_labels.get(key)
+        if label:
+            return str(label)                            # "Codex 2", as the person named it
         provider = next((p for p in key.split("-") if p in PROVIDER_NAMES), "")
         return PROVIDER_NAMES.get(provider) or key.replace("-", " ").capitalize()
 
@@ -427,7 +447,7 @@ class ProjectData:
     def create_goal(self, title: str, owner: str) -> str | None:
         self.forget()
         try:
-            return self.store.create_goal(title, owner=owner, connection="ari").id
+            return self.store.create_goal(title, owner=owner, connection=self.default_id).id
         except (StoreError, OSError, ValueError):
             log.exception("could not create the goal")
             return None
@@ -504,7 +524,7 @@ def projects_root() -> Path:
     return Path.home() / "Documents" / "Playground Projects"
 
 
-def list_projects(bus) -> list[ProjectData]:
+def list_projects(bus, connections: list[dict] | None = None) -> list[ProjectData]:
     project = _optional("core.project")
     folders: list[Path] = []
     if project is not None:
@@ -512,7 +532,7 @@ def list_projects(bus) -> list[ProjectData]:
             folders = [Path(p.path) for p in project.list_projects(projects_root()) if p.path]
         except Exception:  # noqa: BLE001
             log.exception("could not list projects")
-    projects = [ProjectData(folder, bus) for folder in folders]
+    projects = [ProjectData(folder, bus, connections) for folder in folders]
     projects.sort(key=lambda p: p.name.lower())
     return projects
 
@@ -550,6 +570,37 @@ def load_connections() -> list[dict]:
     if not any(c.get("kind") == "ari" or c.get("id") == "ari" for c in found):
         found.insert(0, dict(ARI))
     return found
+
+
+def _local_agent(connection) -> bool:
+    """A connection that's an agent program here: not Ari or a bare local model, and not on another computer."""
+    provider = str(_connection_field(connection, "provider", "") or "").lower()
+    where = str(_connection_field(connection, "where", "this-computer") or "this-computer")
+    return (_connection_field(connection, "kind", "") != "ari" and provider not in ("ari", "ollama", "")
+            and where in ("this-computer", "local"))
+
+
+def default_connection_id(found: list | None = None) -> str:
+    """Where a new conversation starts: a real Ari connection first, else the first agent
+    set up on this computer, else the Ari placeholder until someone connects one.
+
+    Callers that already hold the connections (the window, its project rows) pass
+    them in; only a one-off call reads the file. Ari's placeholder is included in
+    the window's list, so it is handled here like any other connection."""
+    if found is None:
+        module = _optional("agents.connections")
+        if module is None:
+            return "ari"
+        try:
+            found = list(module.ConnectionStore().list())
+        except Exception:  # noqa: BLE001 - no connections file means Ari, as before
+            return "ari"
+    ari = next((c for c in found if not _ari_placeholder(c) and (
+                _connection_field(c, "kind") == "ari" or _connection_field(c, "id") == "ari")), None)
+    if ari is not None:
+        return str(_connection_field(ari, "id")) if _connection_field(ari, "id") != "ari" else "ari"
+    agent = next((c for c in found if _local_agent(c)), None)
+    return str(_connection_field(agent, "id")) if agent is not None else "ari"
 
 
 def connection_subtitle(connection: dict) -> str:
@@ -609,6 +660,7 @@ class PlaygroundWindow(AppWindow):
         self.project: ProjectData | None = None
         self.goal_id: str | None = None
         self.connections: list[dict] = load_connections()
+        self._default_connection_id = default_connection_id(self.connections)
         self.runners: dict[tuple[str, str], Any] = {}
         self.agent_states: dict[str, str] = {}
         self._tokens: list[int] = []
@@ -1251,7 +1303,23 @@ class PlaygroundWindow(AppWindow):
 
     # ── projects ──────────────────────────────────────────────────────────
     def reload_projects(self) -> None:
-        self.projects = list_projects(self.bus)
+        self.projects = list_projects(self.bus, self.connections)
+
+    def default_connection_id(self) -> str:
+        """The cached choice for new conversations and goals with no agent set."""
+        return self._default_connection_id
+
+    def refresh_connections(self) -> None:
+        """Reload the connections file once and share the result with every project row."""
+        self.connections = load_connections()
+        self._default_connection_id = default_connection_id(self.connections)
+        for project in self.projects:
+            project.set_connections(self.connections)
+        if self.project is not None:
+            self._schedule_sync()
+
+    def _on_connections_changed(self, **payload) -> None:
+        self.refresh_connections()
 
     def _reap_previews(self) -> None:
         """A Playground that was killed can't stop its Stage previews: stop what it left behind (core.preview
@@ -1281,7 +1349,7 @@ class PlaygroundWindow(AppWindow):
         self.reload_projects()
         project = next((p for p in self.projects if p.path.resolve() == folder), None)
         if project is None:
-            project = ProjectData(folder, self.bus)
+            project = ProjectData(folder, self.bus, self.connections)
             self.projects.append(project)
         self._show_project(project, None)
 
@@ -1300,11 +1368,7 @@ class PlaygroundWindow(AppWindow):
             if core_project is not None:
                 _quietly(core_project.upgrade_layout, project.path)
             # Steps a closed Playground left "running": this computer's agents', where nothing runs now.
-            connections = _optional("agents.connections")
-            try:
-                mine = {c.id for c in connections.ConnectionStore().list()} | {"ari"} if connections else {"ari"}
-            except Exception:  # noqa: BLE001
-                mine = {"ari"}
+            mine = {str(_connection_field(c, "id")) for c in self.connections}
             for goal in project.store.list_goals():
                 if goal.id not in working:
                     _quietly(project.store.close_stale_steps, goal.id, mine)
@@ -1750,8 +1814,9 @@ class PlaygroundWindow(AppWindow):
                                     self._card_context(goal, agent), empty=empty)
         self.composer.set_agent(agent, connection_subtitle(agent))
         self._composer_agent = (agent.get("id"), agent.get("label"))
-        known = self._runner(goal_id, create=False)
-        self.composer.set_options(known.options() if known is not None else [], can_choose=self._agent_runs_here())
+        can_choose = self._agent_runs_here()
+        known = self._runner(goal_id, create=can_choose)
+        self.composer.set_options(known.options() if known is not None else [], can_choose=can_choose)
         self.composer.set_plan_link(plan_usage_url(agent))
         self._banner(goal, agent)
         state = self.agent_states.get(goal_id, "")
@@ -2094,10 +2159,12 @@ class PlaygroundWindow(AppWindow):
     def connection(self, key: str | None) -> dict:
         """A connection by id: one on this computer, or a teammate's described from the project."""
         key = str(key or "")
+        if not key:
+            return self.connection(self.default_connection_id())   # a goal with no chosen agent
         for connection in self.connections:
-            if key and key in (connection.get("id"), connection.get("label")):
+            if key in (connection.get("id"), connection.get("label")):
                 return connection
-        if not key or key == "ari":
+        if key == "ari":
             return dict(ARI)
         provider = key.split("-")[-1] if "-" in key else key
         owner = key[: -len(provider) - 1] if "-" in key else ""
@@ -2111,9 +2178,9 @@ class PlaygroundWindow(AppWindow):
 
     def _agent_for(self, goal_id: str | None) -> dict:
         if self.project is None or not goal_id:
-            return self.connection("ari")
+            return self.connection(self.default_connection_id())
         goal = self.project.goal(goal_id) or {}
-        return self.connection(goal.get("connection") or "ari")
+        return self.connection(goal.get("connection") or "")
 
     def _where_words(self, where: str | None) -> str:
         if not where or where in ("this-computer", "local"):
@@ -2675,6 +2742,7 @@ class PlaygroundWindow(AppWindow):
                                (events.DECISION_ANSWERED, self._on_change), (events.PREVIEW_STATE, self._on_preview),
                                (events.AGENT_STATE, self._on_agent), (events.USAGE_CHANGED, self._on_usage),
                                (events.PLACES_CHANGED, self._on_project),
+                               (events.CONNECTIONS_CHANGED, self._on_connections_changed),
                                (events.REQUEST_PENDING, self._on_request),
                                ("stack.changed", self._on_space), ("issue.changed", self._on_space),
                                (events.AGENT_OPTIONS, self._on_options), (events.FILES_CHANGED, self._on_files),
@@ -2703,6 +2771,7 @@ class PlaygroundWindow(AppWindow):
         if runner is None:
             self._toast("Choose who works on this first")
             return
+        runner.warm_options()
         options = runner.options()
         if not options:
             self._options_waiting = True

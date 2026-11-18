@@ -56,13 +56,13 @@ TEAM_TASK_CAP_MIN = 1
 TEAM_TASK_CAP_MAX = 50
 
 # Environment variables that name the account folder for each program.
-HOME_VARS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+HOME_VARS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "opencode": "OPENCODE_DATA_DIR"}
 # Environment variables an API-key connection fills from the keyring.
 KEY_VARS = {
     "claude": ("ANTHROPIC_API_KEY",),
     "codex": ("CODEX_API_KEY", "OPENAI_API_KEY"),
     "gemini": ("GEMINI_API_KEY",),
-    "opencode": (),
+    "opencode": ("OPENCODE_API_KEY",),
     "goose": (),
 }
 # Keys that must not leak into a personal-plan launch, or the program bills
@@ -324,6 +324,8 @@ class ConnectionStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = dump_toml({"connections": [c.to_dict() for c in items]}) if items else ""
         atomic_write_text(self.path, self.HEADER + body, mode=0o600)
+        from ..core import events
+        events.bus.publish(events.CONNECTIONS_CHANGED)
 
     def add(self, connection: Connection) -> Connection:
         """Validate, give it an account folder if it needs one, and save."""
@@ -728,6 +730,9 @@ def detect(*, env: dict[str, str] | None = None, check_ollama: bool = True, time
             version = _run([exe, *args], min(timeout, 10), run_env)
             if version and version.returncode == 0:
                 item.version = (version.stdout.strip().splitlines() or [""])[0][:40]
+            if accounts.SIGN_IN_FILE.get(provider):   # programs that keep a sign-in file of their own
+                account = accounts.Account(provider, "", accounts.NAMES.get(provider, name), id=provider)
+                item = _account_item(provider, account, exe, item.version, "", run_env, timeout)
         found.append(item)
 
     _readiness(found, registry, path)

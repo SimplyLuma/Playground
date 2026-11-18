@@ -13,6 +13,24 @@ from luma_playground.core.project import create_project, upgrade_layout
 from luma_playground.core.store import ProjectStore, StoreError
 
 
+class GuideTests(unittest.TestCase):
+    def test_guide_names_the_actor_env_var(self):
+        self.assertIn("$PLAYGROUND_ACTOR", areas.GUIDE_MD)
+        self.assertNotIn("agent:", areas.GUIDE_MD)
+
+    def test_upgrading_a_project_does_not_rewrite_the_guide_for_each_agent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = create_project("Rally", "Rides to games", root=Path(folder), git=False,
+                                     owner=Member(id="noor", name="Noor", role="owner"))
+            guide = ProjectPaths(project.path).guide
+            guide.write_text("an old guide", encoding="utf-8")
+            self.assertIn("guide.md", upgrade_layout(project.path))
+            first = guide.read_text()
+            self.assertEqual(first, areas.GUIDE_MD)
+            self.assertEqual(upgrade_layout(project.path), [])
+            self.assertEqual(guide.read_text(), first)
+
+
 class AreaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
