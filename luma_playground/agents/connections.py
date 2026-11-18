@@ -324,6 +324,8 @@ class ConnectionStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = dump_toml({"connections": [c.to_dict() for c in items]}) if items else ""
         atomic_write_text(self.path, self.HEADER + body, mode=0o600)
+        from ..core import events
+        events.bus.publish(events.CONNECTIONS_CHANGED)
 
     def add(self, connection: Connection) -> Connection:
         """Validate, give it an account folder if it needs one, and save."""
